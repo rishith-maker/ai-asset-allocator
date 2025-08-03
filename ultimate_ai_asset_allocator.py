@@ -25,12 +25,16 @@ from sklearn.feature_selection import RFE
 
 # ============ CONFIG ===================
 import os
-import random
-from pytrends.request import TrendReq
-pytrends = TrendReq()
-pytrends.build_payload(["IPO"], timeframe='now 7-d')
-df = pytrends.interest_over_time()
-uvicorn
+# Add retries and exponential backoff
+pytrends = TrendReq(
+    hl='en-US',
+    tz=360,
+    retries=3,
+    backoff_factor=1
+)
+
+# Add delay between each request
+time.sleep(10)
 # 🔑 Store your 3 API keys here
 FRED_API_KEYS = [
     " 78bec6e7bd0c1934652e866d6da6dace " 
