@@ -9,14 +9,14 @@ import datetime
 import os
 import yfinance as yf
 import joblib
-import shappip
+import shap 
 import xgboost as xgb
 import matplotlib.pyplot as plt
 from fredapi import Fred
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
-from evidently.report import Report
+from evidently import Report
 from evidently.metric_preset import DataDriftPreset
 from transformers import pipeline as hf_pipeline
 from statsmodels.stats.outliers_influence import variance_inflation_factor
@@ -31,7 +31,7 @@ from pytrends.request import TrendReq
 pytrends = TrendReq()
 pytrends.build_payload(["IPO"], timeframe='now 7-d')
 df = pytrends.interest_over_time()
-
+uvicorn
 # 🔑 Store your 3 API keys here
 FRED_API_KEYS = [
     " 78bec6e7bd0c1934652e866d6da6dace " 
