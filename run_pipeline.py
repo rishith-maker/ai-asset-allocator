@@ -22,9 +22,18 @@ from sklearn.feature_selection import RFE
 import os
 import random
 from pytrends.request import TrendReq
-pytrends = TrendReq(hl='en-US', tz=360, retries=2, backoff_factor=0.5)
 import time
-time.sleep(10)  # wait 10 seconds between requests
+
+# Add retries and exponential backoff
+pytrends = TrendReq(
+    hl='en-US',
+    tz=360,
+    retries=3,
+    backoff_factor=1
+)
+
+# Add delay between each request
+time.sleep(10)
 pytrends.build_payload(["IPO"], timeframe='now 7-d')
 df = pytrends.interest_over_time()
 uvicorn
