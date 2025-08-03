@@ -26,7 +26,6 @@ from sklearn.feature_selection import RFE
 # ============ CONFIG ===================
 import os
 import random
-from fastapi import FastAPI
 from pytrends.request import TrendReq
 pytrends = TrendReq()
 pytrends.build_payload(["IPO"], timeframe='now 7-d')

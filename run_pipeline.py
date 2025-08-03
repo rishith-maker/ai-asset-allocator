@@ -1,15 +1,10 @@
-"""
-Unified Institutional AI IPO Pipeline
-Includes: macro + sentiment + feature selection + regime detection + modeling + backtesting + drift + FastAPI
-"""
-
 import pandas as pd
 import numpy as np
 import datetime
 import os
 import yfinance as yf
 import joblib
-import shap
+import shap 
 import xgboost as xgb
 import matplotlib.pyplot as plt
 from fredapi import Fred
@@ -17,16 +12,38 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
 from evidently.report import Report
-from evidently.metric_preset import DataDriftPreset
+from evidently.metric_preset import DataDriftPreset, TargetDriftPreset
 from transformers import pipeline as hf_pipeline
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from sklearn.linear_model import LinearRegression
 from sklearn.feature_selection import RFE
 
 # ============ CONFIG ===================
-FRED_API_KEY = "YOUR_FRED_API_KEY"
-RESULTS_DIR = "results"
-os.makedirs(RESULTS_DIR, exist_ok=True)
+import os
+import random
+from pytrends.request import TrendReq
+pytrends = TrendReq(hl='en-US', tz=360, retries=2, backoff_factor=0.5)
+import time
+time.sleep(10)  # wait 10 seconds between requests
+pytrends.build_payload(["IPO"], timeframe='now 7-d')
+df = pytrends.interest_over_time()
+uvicorn
+# 🔑 Store your 3 API keys here
+FRED_API_KEYS = [
+    " 78bec6e7bd0c1934652e866d6da6dace " 
+    "ea6d44c6e1de4e64823c4d372384adb5",
+    "djouQaN6E7XYWmXQ9tCGXcjWgdHFDC29"
+]
+
+# 🔄 Function to select one API key randomly
+def get_fred_api_key():
+    return random.choice(FRED_API_KEYS)
+
+# 🗂 Create results directory if it doesn't exist
+RESULT_DIR = "results"
+os.makedirs(RESULT_DIR, exist_ok=True)
+
+# 🚀 Create FastAPI app
 app = FastAPI(title="AI IPO Hedge Fund-Grade Pipeline")
 
 # ============ MODELS & API =============
