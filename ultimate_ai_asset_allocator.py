@@ -1,54 +1,61 @@
-"""
-Unified Institutional AI IPO Pipeline
-Includes: macro + sentiment + feature selection + regime detection + modeling + backtesting + drift + FastAPI
-"""
-
 import pandas as pd
 import numpy as np
 import datetime
 import os
 import yfinance as yf
 import joblib
-import shap 
+import shap
 import xgboost as xgb
 import matplotlib.pyplot as plt
 from fredapi import Fred
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
-from evidently import Report
+from evidently.report import Report
 from evidently.metric_preset import DataDriftPreset
 from transformers import pipeline as hf_pipeline
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from sklearn.linear_model import LinearRegression
 from sklearn.feature_selection import RFE
+from pytrends.request import TrendReq
+from scipy.optimize import minimize
+import bt
+import random
+import time
+import uuid
 
 # ============ CONFIG ===================
-import os
-# Add retries and exponential backoff
+# Setup Pytrends with retries and headers
+requests_args = {
+    'headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    }
+}
 pytrends = TrendReq(
     hl='en-US',
     tz=360,
     retries=3,
-    backoff_factor=1
+    backoff_factor=1,
+    requests_args=requests_args
 )
-
-# Add delay between each request
 time.sleep(10)
+
 # 🔑 Store your 3 API keys here
 FRED_API_KEYS = [
-    " 78bec6e7bd0c1934652e866d6da6dace " 
+    "78bec6e7bd0c1934652e866d6da6dace",
     "ea6d44c6e1de4e64823c4d372384adb5",
     "djouQaN6E7XYWmXQ9tCGXcjWgdHFDC29"
 ]
 
-# 🔄 Function to select one API key randomly
 def get_fred_api_key():
     return random.choice(FRED_API_KEYS)
 
 # 🗂 Create results directory if it doesn't exist
-RESULT_DIR = "results"
-os.makedirs(RESULT_DIR, exist_ok=True)
+RESULTS_DIR = "results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
+# Load FinBERT sentiment model once
+finbert = hf_pipeline("sentiment-analysis", model="yiyanghkust/finbert-tone")
 
 # 🚀 Create FastAPI app
 app = FastAPI(title="AI IPO Hedge Fund-Grade Pipeline")
@@ -67,7 +74,7 @@ def get_price_data(tickers, start='2021-01-01', end=None):
     return data.dropna()
 
 def get_macro_data(start, end):
-    fred = Fred(api_key=FRED_API_KEY)
+    fred = Fred(api_key=get_fred_api_key())
     series = {
         'FEDFUNDS': 'FedFundsRate',
         'CPIAUCSL': 'InflationCPI',
@@ -106,7 +113,6 @@ def apply_rfe(X, y, n=10):
 
 # ============ SENTIMENT PIPELINE =============
 def get_sentiment_scores(text_dict):
-    finbert = hf_pipeline("sentiment-analysis", model="yiyanghkust/finbert-tone")
     out = {}
     for ticker, text in text_dict.items():
         result = finbert(text[:512])[0]
@@ -139,23 +145,49 @@ def train_all_models(features, target, tickers):
         models[ticker] = model
         predictions[ticker] = model.predict(features[X.columns])
     return models, predictions
+   # ============ PORTFOLIO OPTIMIZATION =============
+   def optimize_portfolio(predicted_returns):
+    import numpy as np
+    import pandas as pd
 
-# ============ PORTFOLIO OPTIMIZATION ============
-def optimize_portfolio(predicted_returns):
-    mean_ret = predicted_returns.mean()
-    cov_matrix = predicted_returns.cov()
-    from scipy.optimize import minimize
+    df = pd.DataFrame(predicted_returns)
+    mean_returns = df.mean()
+    cov_matrix = df.cov()
 
-    def neg_sharpe(weights):
-        r = np.dot(weights, mean_ret)
-        v = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-        return -r / v
+    num_portfolios = 5000
+    results = np.zeros((3, num_portfolios))
+    weights_record = []
 
-    n = len(mean_ret)
-    bounds = [(0,1)] * n
-    constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
-    result = minimize(neg_sharpe, [1/n]*n, bounds=bounds, constraints=constraints)
-    return pd.Series(result.x, index=mean_ret.index)
+    for i in range(num_portfolios):
+        weights = np.random.random(len(mean_returns))
+        weights /= np.sum(weights)
+        weights_record.append(weights)
+
+        portfolio_return = np.dot(weights, mean_returns)
+        portfolio_stddev = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+        sharpe_ratio = portfolio_return / portfolio_stddev
+
+        results[0, i] = portfolio_return
+        results[1, i] = portfolio_stddev
+        results[2, i] = sharpe_ratio
+
+    max_sharpe_idx = np.argmax(results[2])
+    optimal_weights = weights_record[max_sharpe_idx]
+    allocation = pd.Series(optimal_weights, index=mean_returns.index)
+    return allocation
+
+# ✅ STEP 3: Run optimizer and debug print
+print("✅ Running portfolio optimizer...")
+allocation = optimize_portfolio(predicted_returns)
+print("✅ Allocation generated:\n", allocation)
+
+# ✅ STEP 4: Create results folder and save allocation
+os.makedirs("results", exist_ok=True)
+
+print("✅ Saving allocation to results/allocation.csv")
+allocation.to_csv("results/allocation.csv")
+
+
 
 # ============ BACKTESTING =====================
 def run_backtest(predicted_returns, weights):
@@ -185,7 +217,6 @@ def predict_allocation(request: PredictRequest):
     features = merge_macro_features(features, macro)
     regimes = detect_market_regimes(prices)
 
-    # Sentiment mock (replace with actual filing scraper)
     mock_filings = {ticker: f"{ticker} is a growth tech firm expanding rapidly..." for ticker in tickers}
     sentiment = get_sentiment_scores(mock_filings)
     for col in sentiment.columns:
@@ -204,3 +235,21 @@ def predict_allocation(request: PredictRequest):
         "allocation": allocation.to_dict(),
         "message": "Complete pipeline executed with regime, sentiment, macro, drift, and optimization."
     }
+def main(tickers=None, capital=10000, start='2021-01-01', end=None):
+    if tickers is None:
+        tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA']
+        
+    print("🔍 Fetching IPO price data...")
+    price_data = get_ipo_data(tickers, start=start, end=end)
+
+    print("📊 Training return prediction models...")
+    models, predicted_returns = train_return_model(price_data)
+
+    print("📈 Optimizing portfolio using Sharpe Ratio...")
+    allocation = optimize_portfolio(predicted_returns)
+
+    print("💾 Exporting results to CSV and chart...")
+    export_results(allocation, capital=capital)
+
+    print("✅ Pipeline complete.")
+    

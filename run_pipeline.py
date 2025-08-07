@@ -4,72 +4,133 @@ import datetime
 import os
 import yfinance as yf
 import joblib
-import shap 
+import shap
 import xgboost as xgb
 import matplotlib.pyplot as plt
 from fredapi import Fred
-from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import List
 from evidently.report import Report
-from evidently.metric_preset import DataDriftPreset, TargetDriftPreset
+from evidently.metric_preset import DataDriftPreset
 from transformers import pipeline as hf_pipeline
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from sklearn.linear_model import LinearRegression
 from sklearn.feature_selection import RFE
+from pytrends.request import TrendReq
+from scipy.optimize import minimize
+import bt
+import random
+import time
+import uuid
+import warnings
+from sklearn.model_selection import train_test_split  # Add this line
+from sklearn.metrics import mean_squared_error  # Ensure this is also imported
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+
+# Suppress FutureWarnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+# Your function or script code follows
+
+
+# ✅ Define the function FIRST
+def get_price_data(tickers, start='2021-01-01', end=None):
+    if end is None:
+        end = datetime.datetime.today().strftime('%Y-%m-%d')
+    
+    try:
+        data = yf.download(tickers, start=start, end=end, auto_adjust=False, group_by='ticker')
+        price_data = {}
+
+        if len(tickers) == 1:
+            df = data
+            if 'Adj Close' in df.columns:
+                price_data[tickers[0]] = df['Adj Close'].dropna()
+            else:
+                price_data[tickers[0]] = df['Close'].dropna()
+        else:
+            for ticker in tickers:
+                df = data[ticker]
+                if 'Adj Close' in df.columns:
+                    price_data[ticker] = df['Adj Close'].dropna()
+                else:
+                    price_data[ticker] = df['Close'].dropna()
+
+        return price_data
+    except Exception as e:
+        print(f"An error occurred while fetching price data: {e}")
+        return None
+
+
+# ...existing code...
+# ✅ Define the function FIRST
+def get_price_data(tickers, start='2021-01-01', end=None):
+    if end is None:
+        end = datetime.datetime.today().strftime('%Y-%m-%d')
+    
+    try:
+        data = yf.download(tickers, start=start, end=end, auto_adjust=False, group_by='ticker')
+        price_data = {}
+
+        if len(tickers) == 1:
+            df = data
+            if 'Adj Close' in df.columns:
+                price_data[tickers[0]] = df['Adj Close'].dropna()
+            else:
+                price_data[tickers[0]] = df['Close'].dropna()
+        else:
+            for ticker in tickers:
+                df = data[ticker]
+                if 'Adj Close' in df.columns:
+                    price_data[ticker] = df['Adj Close'].dropna()
+                else:
+                    price_data[ticker] = df['Close'].dropna()
+
+        return price_data
+    except Exception as e:
+        print(f"An error occurred while fetching price data: {e}")
+        return None
+
+# Remove the second get_price_data definition!
+# ...existing code...
 
 # ============ CONFIG ===================
-import os
-import random
-from pytrends.request import TrendReq
-import time
-
-# Add retries and exponential backoff
+# Setup Pytrends with retries and headers
+requests_args = {
+    'headers': {
+        'User -Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    }
+}
 pytrends = TrendReq(
     hl='en-US',
     tz=360,
     retries=3,
-    backoff_factor=1
+    backoff_factor=1,
+    requests_args=requests_args
 )
-
-# Add delay between each request
 time.sleep(10)
-pytrends.build_payload(["IPO"], timeframe='now 7-d')
-df = pytrends.interest_over_time()
-uvicorn
+
 # 🔑 Store your 3 API keys here
 FRED_API_KEYS = [
-    " 78bec6e7bd0c1934652e866d6da6dace " 
-    "ea6d44c6e1de4e64823c4d372384adb5",
-    "djouQaN6E7XYWmXQ9tCGXcjWgdHFDC29"
+    "78bec6e7bd0c1934652e866d6da6dace",
+   
 ]
 
-# 🔄 Function to select one API key randomly
 def get_fred_api_key():
     return random.choice(FRED_API_KEYS)
 
 # 🗂 Create results directory if it doesn't exist
-RESULT_DIR = "results"
-os.makedirs(RESULT_DIR, exist_ok=True)
+RESULTS_DIR = "results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# 🚀 Create FastAPI app
-app = FastAPI(title="AI IPO Hedge Fund-Grade Pipeline")
+# Load FinBERT sentiment model once
+finbert = hf_pipeline("sentiment-analysis", model="yiyanghkust/finbert-tone")
 
-# ============ MODELS & API =============
-class PredictRequest(BaseModel):
-    tickers: List[str]
-    start_date: str = "2021-01-01"
-    end_date: str = None
+
+
 
 # ============ DATA LOADERS =============
-def get_price_data(tickers, start='2021-01-01', end=None):
-    if end is None:
-        end = datetime.datetime.today().strftime('%Y-%m-%d')
-    data = yf.download(tickers, start=start, end=end)['Adj Close']
-    return data.dropna()
-
 def get_macro_data(start, end):
-    fred = Fred(api_key=FRED_API_KEY)
+    fred = Fred(api_key=get_fred_api_key())
     series = {
         'FEDFUNDS': 'FedFundsRate',
         'CPIAUCSL': 'InflationCPI',
@@ -86,8 +147,13 @@ def engineer_features(prices):
     returns = prices.pct_change().dropna()
     momentum = returns.rolling(window=5).mean()
     volatility = returns.rolling(window=5).std()
-    features = pd.concat([returns.shift(1), momentum.shift(1), volatility.shift(1)], axis=1)
-    return features.dropna(), returns.loc[features.dropna().index]
+    features = pd.DataFrame({
+        'returns': returns.shift(1),
+        'momentum': momentum.shift(1),
+        'volatility': volatility.shift(1)
+    })
+    features = features.dropna()
+    return features, returns.loc[features.index]
 
 def merge_macro_features(price_feats, macro_df):
     return pd.concat([price_feats, macro_df.reindex(price_feats.index, method='ffill')], axis=1)
@@ -108,7 +174,6 @@ def apply_rfe(X, y, n=10):
 
 # ============ SENTIMENT PIPELINE =============
 def get_sentiment_scores(text_dict):
-    finbert = hf_pipeline("sentiment-analysis", model="yiyanghkust/finbert-tone")
     out = {}
     for ticker, text in text_dict.items():
         result = finbert(text[:512])[0]
@@ -123,49 +188,90 @@ def detect_market_regimes(prices, window=20, threshold=0.02):
     regimes = (vol > threshold).astype(str).replace({'True': 'high_vol', 'False': 'low_vol'})
     return regimes
 
+def prepare_features_targets(price_series):
+    returns = price_series.pct_change().dropna()
+    X = returns.shift(1).dropna()  # lagged returns as features (example)
+    y = returns.loc[X.index]
+    return X, y
+
+
 # ============ MODEL TRAINING + SWITCHING ============
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+
 def train_model(X, y):
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100)
-    model.fit(X, y)
-    return model
+    model.fit(X_train, y_train)
+    return model, X_test, y_test
 
-def train_all_models(features, target, tickers):
-    models = {}
-    predictions = pd.DataFrame(index=features.index)
-    for ticker in tickers:
-        y = target[ticker].dropna()
-        X = features.loc[y.index]
-        X = calculate_vif(X)
-        X = apply_rfe(X, y, min(10, X.shape[1]))
-        model = train_model(X, y)
-        models[ticker] = model
-        predictions[ticker] = model.predict(features[X.columns])
-    return models, predictions
+def optimize_portfolio(predicted_returns, cov_matrix=None, tickers=None):
+    """
+    Optimize portfolio allocation based on predicted returns and covariance matrix.
+    Returns a dictionary of allocations.
+    """
+    allocation = {}
+    if predicted_returns is None or not predicted_returns or cov_matrix is None:
+        print("❌ No predicted returns or covariance matrix available for portfolio optimization.")
+        return allocation
+    if tickers is None:
+        tickers = list(predicted_returns.keys())
 
-# ============ PORTFOLIO OPTIMIZATION ============
-def optimize_portfolio(predicted_returns):
-    mean_ret = predicted_returns.mean()
-    cov_matrix = predicted_returns.cov()
-    from scipy.optimize import minimize
+    mu = np.array([predicted_returns[ticker] for ticker in tickers])
+    cov = cov_matrix.loc[tickers, tickers].values
 
     def neg_sharpe(weights):
-        r = np.dot(weights, mean_ret)
-        v = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-        return -r / v
+        port_return = np.dot(weights, mu)
+        port_vol = np.sqrt(np.dot(weights.T, np.dot(cov, weights)))
+        # Avoid division by zero
+        if port_vol == 0:
+            return 1e6
+        return -port_return / port_vol
 
-    n = len(mean_ret)
-    bounds = [(0,1)] * n
-    constraints = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
-    result = minimize(neg_sharpe, [1/n]*n, bounds=bounds, constraints=constraints)
-    return pd.Series(result.x, index=mean_ret.index)
+    # Constraints: weights sum to 1, weights >= 0
+    cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+    bounds = [(0, 1) for _ in tickers]
+    x0 = np.array([1 / len(tickers)] * len(tickers))
 
+    result = minimize(neg_sharpe, x0, bounds=bounds, constraints=cons)
+    if not result.success:
+        print("⚠️ Optimization failed, using equal weights.")
+        allocation = {ticker: 1 / len(tickers) for ticker in tickers}
+    else:
+        allocation = {ticker: weight for ticker, weight in zip(tickers, result.x)}
+    return allocation
 # ============ BACKTESTING =====================
-def run_backtest(predicted_returns, weights):
-    import bt
-    price_idx = (1 + predicted_returns.fillna(0)).cumprod()
-    def strategy(prices): return weights
-    strat = bt.Strategy("AI_Optimized", [bt.algos.RunMonthly(), bt.algos.SelectAll(), bt.algos.WeighTarget(strategy), bt.algos.Rebalance()])
-    test = bt.Backtest(strat, price_idx)
+def run_backtest(price_data, weights):
+    if price_data is None or weights is None:
+        print("❌ Invalid input for backtesting.")
+        return None
+
+    # Remove tickers with empty price series
+    valid_price_data = {k: v for k, v in price_data.items() if isinstance(v, pd.Series) and not v.empty}
+    if not valid_price_data:
+        print("❌ No valid price data for backtesting.")
+        return None
+
+    price_df = pd.DataFrame(valid_price_data)
+    price_df = price_df.dropna()
+
+    # Filter weights to match available tickers
+    valid_weights = {k: weights[k] for k in price_df.columns if k in weights}
+
+    if price_df.empty or not valid_weights:
+        print("❌ No valid price data or weights for backtesting.")
+        return None
+
+    strat = bt.Strategy(
+        "AI_Optimized",
+        [
+            bt.algos.RunMonthly(),
+            bt.algos.SelectAll(),
+            bt.algos.WeighSpecified(**valid_weights),
+            bt.algos.Rebalance()
+        ]
+    )
+    test = bt.Backtest(strat, price_df)
     res = bt.run(test)
     res.plot(title="Equity Curve")
     plt.savefig(f"{RESULTS_DIR}/backtest_equity_curve.png")
@@ -173,36 +279,90 @@ def run_backtest(predicted_returns, weights):
 
 # ============ DRIFT MONITOR ====================
 def run_drift_monitor(train_feats, live_feats):
+    if train_feats is None or live_feats is None or train_feats.empty or live_feats.empty:
+        print("❌ Invalid input for drift monitoring.")
+        return None
+
     report = Report(metrics=[DataDriftPreset()])
     report.run(reference_data=train_feats, current_data=live_feats)
     report.save_html(f"{RESULTS_DIR}/drift_report.html")
 
-# ============ API ENDPOINT =====================
-@app.post("/predict")
-def predict_allocation(request: PredictRequest):
-    tickers = request.tickers
-    prices = get_price_data(tickers, request.start_date, request.end_date)
-    features, target = engineer_features(prices)
-    macro = get_macro_data(request.start_date, request.end_date)
-    features = merge_macro_features(features, macro)
-    regimes = detect_market_regimes(prices)
 
-    # Sentiment mock (replace with actual filing scraper)
-    mock_filings = {ticker: f"{ticker} is a growth tech firm expanding rapidly..." for ticker in tickers}
-    sentiment = get_sentiment_scores(mock_filings)
-    for col in sentiment.columns:
-        for ticker in sentiment.index:
-            features.loc[:, f"{ticker}_{col}"] = sentiment.loc[ticker, col]
 
-    models, preds = train_all_models(features, target, tickers)
-    allocation = optimize_portfolio(preds)
-    joblib.dump(models, f"{RESULTS_DIR}/models.pkl")
-    allocation.to_csv(f"{RESULTS_DIR}/allocation.csv")
-    run_backtest(preds, allocation)
-    run_drift_monitor(features, features.tail(50))
+def export_results(allocation, capital=10000):
+    """Save allocation results to CSV and generate plot"""
+    print("DEBUG: allocation =", allocation)
 
-    return {
-        "tickers": tickers,
-        "allocation": allocation.to_dict(),
-        "message": "Complete pipeline executed with regime, sentiment, macro, drift, and optimization."
-    }
+    # Use Series for scalar dict
+    pd.Series(allocation).to_csv(f"{RESULTS_DIR}/allocation.csv")
+
+    print(f"✅ Saved allocation results to {RESULTS_DIR}/allocation.csv")
+
+
+def main():
+    print("🔍 Fetching price data...")
+
+    tickers = ["AAPL", "AMZN", "GOOGL", "MSFT", "NVDA"]
+    capital = 10000
+    predicted_returns = {}
+
+    # Fetch price data
+    try:
+        price_data = get_price_data(tickers)
+        if price_data is None or any(data is None for data in price_data.values()):
+            raise ValueError("Some price data could not be fetched.")
+    except Exception as e:
+        print(f"❌ Error fetching price data: {e}")
+        return
+
+    print("📊 Training return prediction models...")
+    # ... Sentiment, Macro, Regime steps ...
+
+    # Train model per ticker and predict returns
+    for ticker in tickers:
+        try:
+            X, y = prepare_features_targets(price_data[ticker])
+            model, X_test, y_test = train_model(X, y)
+            predictions = model.predict(X_test)
+            predicted_returns[ticker] = predictions.mean()
+            rmse = np.sqrt(np.mean((predictions - y_test) ** 2))
+            print(f"{ticker} RMSE: {rmse:.4f}")
+        except Exception as e:
+            print(f"⚠️ Error training model for {ticker}: {e}")
+            predicted_returns[ticker] = 0.0
+
+    # Calculate covariance matrix for portfolio optimization
+    try:
+        combined_df = pd.concat(price_data.values(), axis=1)
+        combined_df.columns = tickers
+        cov_matrix = combined_df.pct_change().cov()
+    except Exception as e:
+        print(f"❌ Error computing covariance matrix: {e}")
+        return
+
+
+
+    print("📈 Optimizing portfolio...")
+    allocation = optimize_portfolio(predicted_returns, cov_matrix, tickers)
+
+    if not allocation or not any(allocation.values()):
+        print("⚠️ Allocation is empty. Using equal weights as fallback.")
+        allocation = {ticker: 1 / len(tickers) for ticker in tickers}
+
+    print("💾 Exporting results...")
+    export_results(allocation, capital=capital)
+
+    print("🔄 Running backtest...")
+    run_backtest(price_data, allocation)
+    print("✅ Backtest complete. Equity curve saved.")
+
+    print("🔎 Running drift monitor...")
+    train_feats, _ = engineer_features(price_data[tickers[0]])
+    live_feats, _ = engineer_features(price_data[tickers[-1]])
+    run_drift_monitor(train_feats, live_feats)
+    print("✅ Drift report saved.")
+
+    print("✅ Pipeline complete.")
+
+if __name__ == "__main__":
+    main()
